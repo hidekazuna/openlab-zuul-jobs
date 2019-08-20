@@ -206,6 +206,8 @@
       jobs:
         - cluster-api-provider-openstack-image-build:
             branches: master
+        - cluster-api-provider-openstack-acceptance-test:
+            branches: master
 
 - project:
     name: manageiq/manageiq-providers-openstack

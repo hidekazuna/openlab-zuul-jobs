@@ -1,0 +1,121 @@
+- hosts: all
+  roles:
+    - config-golang
+    - export-cloud-openrc
+    - install-k8s
+  become: yes
+  tasks:
+    - name: Install yq, make and kind
+      shell:
+        cmd: |
+          set -x
+          set -e
+          set -o pipefail
+          add-apt-repository -y ppa:rmescandon/yq
+          apt update
+          apt install yq -y
+          apt install make -y
+          GO111MODULE="on" go get sigs.k8s.io/kind@v0.4.0
+          export PATH=$PATH:$HOME/go/bin
+        executable: /bin/bash
+        chdir: '{{ k8s_cluster_api_provider_os_src_dir }}'
+      environment: '{{ global_env }}'
+
+    - name: Build clusterctl tool
+      shell:
+        cmd: |
+          set -x
+          set -e
+          set -o pipefail
+          make clusterctl
+        executable: /bin/bash
+        chdir: '{{ k8s_cluster_api_provider_os_src_dir }}'
+      environment: '{{ global_env }}'
+
+    - name: Login dockerhub
+      shell: docker login -u {{ dockerhub.username }} -p {{ dockerhub.password }}
+      no_log: yes
+        executable: /bin/bash
+        chdir: '{{ k8s_cluster_api_provider_os_src_dir }}'
+      environment: '{{ global_env }}'
+
+    - name: Build and upload images for cluster-api-provider-openstack
+      shell:
+        cmd: |
+          set -x
+          set -e
+          set -o pipefail
+          export LOG_DIR='{{ k8s_log_dir }}'
+ 
+          make upload-images 2>&1 | tee $LOG_DIR/image-build-upload.log
+
+        executable: /bin/bash
+        chdir: '{{ k8s_cluster_api_provider_os_src_dir }}'
+      environment: '{{ global_env }}'
+
+    - name: Run clusterctl create cluster
+      shell:
+        cmd: |
+          set -x
+          set -e
+          set -o pipefail
+
+          # Create clouds.yaml
+          cat << EOF >> /tmp/clouds.yaml
+          clouds:
+            openstack:
+              auth:
+                auth_url: $OS_AUTH_URL
+                project_id: $OS_PROJECT_ID
+                user_domain_name: $OS_USER_DOMAIN_NAME
+                username: $OS_USERNAME
+                password: $OS_PASSWORD
+              region_name: $OS_REGION_NAME
+          EOF
+
+          cd cmd/clusterctl/examples/openstack
+          ./generate-yaml.sh /tmp/clouds.yaml openstack ubuntu out
+
+          # Get floating IP, external network ID, image name, flavor, and securityGroups
+          apt-get install python3-openstackclient -y
+
+          externalNetworkId=$(openstack network list --external -f value -c ID | head -n 1)
+          apiServerLoadBalancerFloatingIP=$(openstack floating ip create ${externalNetworkId}  -c floating_ip_address -f value)
+          wget https://cloud-images.ubuntu.com/releases/bionic/release/ubuntu-18.04-server-cloudimg-amd64.img
+          openstack image create --container-format bare --disk-format qcow2 --file ubuntu-18.04-server-cloudimg-amd64.img cluster-api
+          openstack flavor create --ram 2048 --disk 40 --vcpus 2 cluster-api
+          openstack security group create master
+          openstack security group rule create --protocol tcp --dst-port 443 master          
+          openstack security group create worker
+          openstack security group rule create --protocol tcp --dst-port 10250 --remote-group master worker
+          openstack security group rule create --protocol tcp --dst-port 30000:32767 worker
+          
+          # replace values
+          yq w -i out/cluster.yaml spec.providerSpec.value.clusterConfiguration.controlPlaneEndpoint http://${apiServerLoadBalancerFloatingIP}:443
+          yq w -i out/cluster.yaml spec.providerSpec.value.useOctavia true
+          yq w -i out/cluster.yaml spec.providerSpec.value.nodeCidr "172.16.1.0/24"
+          yq w -i out/cluster.yaml spec.providerSpec.value.managedAPIServerLoadBalancer true
+          yq w -i out/cluster.yaml spec.providerSpec.value.externalNetworkId ${externalNetworkId} 
+          yq w -i out/cluster.yaml spec.providerSpec.value.apiServerLoadBalancerFloatingIP ${apiServerLoadBalancerFloatingIP} 
+          yq w -i out/cluster.yaml spec.providerSpec.value.apiServerLoadBalancerPort 443
+          yq w -i machines.yaml items[*].spec.providerSpec.value.image cluster-api
+          yq w -i machines.yaml items[*].spec.providerSpec.value.flavor cluster-api
+          yq w -i machines.yaml items[*].spec.providerSpec.value.useOctavia true
+          yq d -i machines.yaml items[*].spec.providerSpec.value.floatingIP
+          yq d -i machines.yaml items[*].spec.providerSpec.value.networks[0]
+          yq w -i machines.yaml items[*].spec.providerSpec.value.networks[+].filter.name k8s-clusterapi-cluster-default-test1
+          yq w -i machines.yaml items[*].spec.providerSpec.value.networks[0].subnets[+].filter.name k8s-clusterapi-cluster-default-test1
+          yq w -i machines.yaml items[0].spec.providerSpec.value.securityGroups[0].uuid master
+          yq w -i machines.yaml items[1].spec.providerSpec.value.securityGroups[0].uuid worker
+
+          # create cluster
+          cd '{{ k8s_cluster_api_provider_os_src_dir }}'
+          export LOG_DIR='{{ k8s_log_dir }}'
+          bin/clusterctl create cluster --bootstrap-type kind --provider openstack \
+          -c cmd/clusterctl/examples/openstack/out/cluster.yaml \
+          -m cmd/clusterctl/examples/openstack/out/machines.yaml \
+          -p cmd/clusterctl/examples/openstack/out/provider-components.yaml | tee $LOG_DIR/create_cluster.log
+
+        executable: /bin/bash
+        chdir: '{{ k8s_cluster_api_provider_os_src_dir }}'
+      environment: '{{ global_env }}'

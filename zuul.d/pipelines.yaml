@@ -1081,3 +1081,40 @@
       github:
         status: 'failure'
       mysql:
+
+- pipeline:
+    name: cluster-api-provider-openstack-acceptance-test
+    description: |
+      Commenting "/test cluster-api-provider-openstack-acceptance-test" enter this pipeline to run
+      the tests job of cluster-api-provider-openstack E2E test scenarios and receive an initial
+      +/-1 Verified vote.
+    manager: independent
+    trigger:
+      github:
+        - event: pull_request
+          action:
+            - opened
+            - changed
+            - reopened
+        - event: pull_request
+          action: comment
+          comment: (?i)^\s*\/test cluster-api-provider-openstack-acceptance-test\s*$
+        - event: pull_request
+          action: comment
+          comment: (?i)^\s*\/retest\s*$
+        - event: pull_request
+          action: comment
+          comment: (?i)^\s*\/test all\s*$
+    start:
+      github:
+        status: pending
+        comment: false
+        status-url: https://status.openlabtesting.org/status/change/{change.number},{change.patchset}
+    success:
+      github:
+        status: 'success'
+      mysql:
+    failure:
+      github:
+        status: 'failure'
+      mysql:

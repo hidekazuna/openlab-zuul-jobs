@@ -769,6 +769,18 @@
     secrets:
       - dockerhub
 
+- job:
+    name: cluster-api-provider-openstack-acceptance-test
+    parent: cloud-provider-openstack-test
+    description: |
+      Run clusterctl create cluster
+    run: playbooks/cluster-api-provider-openstack-acceptance-test/run.yaml
+    vars:
+      k8s_cluster_api_provider_os_src_dir: '{{ ansible_user_dir }}/src/sigs.k8s.io/cluster-api-provider-openstack'
+    nodeset: ubuntu-xenial
+    secrets:
+      - dockerhub
+
 # ansible jobs
 - job: # Deprecated
     name: openstacksdk-ansible-devel-functional-devstack
